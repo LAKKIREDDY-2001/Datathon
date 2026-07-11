@@ -1,0 +1,6 @@
+{
+  "name": "Drishti Copilot",
+  "description": "Intelligent Conversational AI investigative assistant and Hypothesis Engine for the Karnataka State Police Crime Database.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

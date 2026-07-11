@@ -40,6 +40,7 @@ import AuditLogDrawer from './components/AuditLogDrawer';
 import CaseSummaryModal from './components/CaseSummaryModal';
 import DigitalLibrary from './components/DigitalLibrary';
 import JurisdictionDirectory from './components/JurisdictionDirectory';
+import RoleAccessDecks from './components/RoleAccessDecks';
 
 
 interface Message {
@@ -179,6 +180,50 @@ export default function App() {
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [inspectedEntity, setInspectedEntity] = useState<{ id: string; type: 'person' | 'fir' } | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Dynamic full-stack states
+  const [firs, setFirs] = useState<FIR[]>(database.firs);
+  const [persons, setPersons] = useState<Person[]>(database.persons);
+  const [relationships, setRelationships] = useState<Relationship[]>(database.relationships);
+  const [locations, setLocations] = useState<Location[]>(database.locations);
+  const [transactions, setTransactions] = useState<FinancialTransaction[]>(database.transactions);
+  const [socioEconomics, setSocioEconomics] = useState<any[]>(database.socioEconomicIndices);
+
+  const fetchDatabaseFromBackend = () => {
+    fetch('/api/firs')
+      .then(res => res.json())
+      .then(data => setFirs(data))
+      .catch(err => console.error('Error fetching FIRs:', err));
+
+    fetch('/api/persons')
+      .then(res => res.json())
+      .then(data => setPersons(data))
+      .catch(err => console.error('Error fetching persons:', err));
+
+    fetch('/api/relationships')
+      .then(res => res.json())
+      .then(data => setRelationships(data))
+      .catch(err => console.error('Error fetching relationships:', err));
+
+    fetch('/api/locations')
+      .then(res => res.json())
+      .then(data => setLocations(data))
+      .catch(err => console.error('Error fetching locations:', err));
+
+    fetch('/api/transactions')
+      .then(res => res.json())
+      .then(data => setTransactions(data))
+      .catch(err => console.error('Error fetching transactions:', err));
+
+    fetch('/api/socioeconomics')
+      .then(res => res.json())
+      .then(data => setSocioEconomics(data))
+      .catch(err => console.error('Error fetching socioeconomics:', err));
+  };
+
+  useEffect(() => {
+    fetchDatabaseFromBackend();
+  }, []);
 
   // Active data filters
   const [selectedDistrict, setSelectedDistrict] = useState<string | null>(null);
@@ -365,12 +410,12 @@ export default function App() {
 
   // Filtered lists based on district selected
   const filteredFirs = selectedDistrict
-    ? database.firs.filter(f => f.district === selectedDistrict)
-    : database.firs;
+    ? firs.filter(f => f.district === selectedDistrict)
+    : firs;
 
   const filteredPersons = selectedDistrict
-    ? database.persons.filter(p => p.district === selectedDistrict)
-    : database.persons;
+    ? persons.filter(p => p.district === selectedDistrict)
+    : persons;
 
   const isPolaris = displayTheme === 'polaris';
   const t = TRANSLATIONS[language];
@@ -653,15 +698,25 @@ export default function App() {
               
               {/* Conditional viewport render */}
               {activeTab === 'dashboard' && (
-                <OverviewDashboard
-                  firs={filteredFirs}
-                  persons={filteredPersons}
-                  socioEconomics={database.socioEconomicIndices}
-                  onSelectDistrict={setSelectedDistrict}
-                  selectedDistrict={selectedDistrict}
-                  userRole={userRole}
-                  t={t}
-                />
+                <div className="space-y-6">
+                  <OverviewDashboard
+                    firs={filteredFirs}
+                    persons={filteredPersons}
+                    socioEconomics={socioEconomics}
+                    onSelectDistrict={setSelectedDistrict}
+                    selectedDistrict={selectedDistrict}
+                    userRole={userRole}
+                    t={t}
+                  />
+                  <RoleAccessDecks
+                    userRole={userRole}
+                    firs={firs}
+                    persons={persons}
+                    socioEconomics={socioEconomics}
+                    onRefreshData={fetchDatabaseFromBackend}
+                    displayTheme={displayTheme}
+                  />
+                </div>
               )}
 
               {activeTab === 'hypothesis' && (
@@ -674,11 +729,11 @@ export default function App() {
 
               {activeTab === 'graph' && (
                 <NetworkGraph
-                  firs={database.firs}
-                  persons={database.persons}
-                  relationships={database.relationships}
-                  locations={database.locations}
-                  transactions={database.transactions}
+                  firs={firs}
+                  persons={persons}
+                  relationships={relationships}
+                  locations={locations}
+                  transactions={transactions}
                   onSelectEntity={(id, type) => setInspectedEntity({ id, type })}
                   selectedEntityId={highlightNodeId}
                   displayTheme={displayTheme}
@@ -687,7 +742,7 @@ export default function App() {
 
               {activeTab === 'library' && (
                 <DigitalLibrary
-                  firs={database.firs}
+                  firs={firs}
                   displayTheme={displayTheme}
                   onSelectCase={(id, type) => setInspectedEntity({ id, type })}
                 />
@@ -697,7 +752,7 @@ export default function App() {
                 <JurisdictionDirectory
                   t={t}
                   language={language}
-                  firs={database.firs}
+                  firs={firs}
                   onSelectDistrictOnMap={setSelectedDistrict}
                   selectedDistrict={selectedDistrict}
                 />
@@ -923,6 +978,7 @@ export default function App() {
           userRole={userRole}
           isOpen={true}
           onClose={() => setInspectedEntity(null)}
+          onRefreshData={fetchDatabaseFromBackend}
         />
       )}
 

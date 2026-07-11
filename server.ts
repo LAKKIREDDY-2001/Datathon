@@ -157,6 +157,15 @@ app.post('/api/case-summary', async (req, res) => {
     relatedFirs = [fir];
   }
 
+  const person = entityType === 'person' ? database.persons.find(p => p.id === entityId) : null;
+  const personMeta = person ? {
+    id: person.id,
+    name: person.name,
+    role: person.role,
+    associatedFirs: relatedFirs.map(f => ({ id: f.id, label: `${f.id} - ${f.crime_type} at ${f.station}` })),
+    allFirs: database.firs.map(f => ({ id: f.id, label: `${f.id} - ${f.crime_type} (${f.station})` }))
+  } : null;
+
   timeline = relatedFirs.map(f => ({
     date: f.date,
     time: f.time,
@@ -195,15 +204,18 @@ Avoid any system jargon or code files references. Return only the JSON object.`;
       const resultText = response.text || '';
       try {
         const parsed = JSON.parse(resultText.trim());
+        if (personMeta) parsed.personMeta = personMeta;
         return res.json(parsed);
       } catch (jsonErr) {
         // Fallback if parsing fails
-        return res.json({
+        const fallbackObj = {
           briefing: resultText,
           linkages: 'Manual verification suggested. Potential linkages detected near transit hubs.',
           nextSteps: ['Conduct physical field verification of suspects address', 'Request local CCTV feed near Majestic bus platform exit'],
           patterns: 'Routine activity pattern matches known repeat offender signature.'
-        });
+        };
+        if (personMeta) (fallbackObj as any).personMeta = personMeta;
+        return res.json(fallbackObj);
       }
     }
   } catch (error) {
@@ -211,7 +223,7 @@ Avoid any system jargon or code files references. Return only the JSON object.`;
   }
 
   // Pure deterministic backup if Gemini fails or is not configured
-  res.json({
+  const backupObj = {
     briefing: `Subject showing distinct criminological patterns matching organized regional syndicates. Spatiotemporal overlaps indicate structured timing and target selection. Status is currently marked as Under Investigation.`,
     linkages: `Co-accused linkages spotted in connected-components analysis around Majestic and Gokulam. Primary link is associated with FIR-RAT-01 and FIR-RCS-01.`,
     nextSteps: [
@@ -220,7 +232,284 @@ Avoid any system jargon or code files references. Return only the JSON object.`;
       'Audit mule accounts flagged in financial transaction registry for KYC swaps'
     ],
     patterns: `High-density clustering matches 91% with signature modus operandi involving silent hydraulic cutters.`
+  };
+  if (personMeta) (backupObj as any).personMeta = personMeta;
+  res.json(backupObj);
+});
+
+// Reclassify Person Role Endpoint
+app.post('/api/persons/:id/update-role', (req, res) => {
+  const { id } = req.params;
+  const { role, user_role } = req.body; // 'accused' | 'victim' | 'witness'
+
+  const person = database.persons.find(p => p.id === id);
+  if (!person) {
+    return res.status(404).json({ error: 'Person not found' });
+  }
+
+  const oldRole = person.role;
+  person.role = role;
+
+  // Update relationships accordingly
+  database.relationships.forEach(rel => {
+    if (rel.person_id_1 === id || rel.person_id_2 === id) {
+      const otherId = rel.person_id_1 === id ? rel.person_id_2 : rel.person_id_1;
+      const otherPerson = database.persons.find(p => p.id === otherId);
+      if (otherPerson) {
+        if (role === 'accused' && otherPerson.role === 'accused') {
+          rel.type = 'co-accused';
+        } else if (role === 'victim' || otherPerson.role === 'victim') {
+          rel.type = 'victim-offender';
+        } else {
+          rel.type = 'associate';
+        }
+      }
+    }
   });
+
+  // Log to audit log
+  const newLog = {
+    id: `AUD-${Math.floor(Math.random() * 9000 + 1000)}`,
+    timestamp: new Date().toISOString(),
+    query: `Reclassify role for ${person.name}`,
+    user_role: user_role || 'Investigator',
+    data_accessed: `PERSON: ${person.id} reclassified from ${oldRole} to ${role}`
+  };
+  auditLogs.unshift(newLog);
+
+  res.json({ success: true, person, auditLog: newLog });
+});
+
+// Transfer Case/FIR for Person Endpoint
+app.post('/api/persons/:id/transfer-case', (req, res) => {
+  const { id } = req.params;
+  const { fromFirId, toFirId, user_role } = req.body;
+
+  const person = database.persons.find(p => p.id === id);
+  if (!person) {
+    return res.status(404).json({ error: 'Person not found' });
+  }
+
+  // 1. Update text mentions in FIRs
+  const fromFir = database.firs.find(f => f.id === fromFirId);
+  const toFir = database.firs.find(f => f.id === toFirId);
+
+  if (fromFir) {
+    // Remove person name from fromFir text and replace with generic
+    const escapedName = person.name.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+    const regex = new RegExp(escapedName, 'gi');
+    fromFir.mo_description = fromFir.mo_description.replace(regex, `an anonymous party`);
+    fromFir.narrative_text = fromFir.narrative_text.replace(regex, `an anonymous party`);
+  }
+
+  if (toFir) {
+    // Append person name to toFir texts
+    toFir.mo_description += ` Mentioned associate: ${person.name} (${person.role}).`;
+    toFir.narrative_text += ` Supplementary investigation links ${person.name} (${person.role}) to this case folder.`;
+  }
+
+  // 2. Update relationships' linked FIRs
+  database.relationships.forEach(rel => {
+    if (rel.person_id_1 === id || rel.person_id_2 === id) {
+      if (rel.linked_fir_ids.includes(fromFirId)) {
+        rel.linked_fir_ids = rel.linked_fir_ids.filter(fid => fid !== fromFirId);
+        if (!rel.linked_fir_ids.includes(toFirId)) {
+          rel.linked_fir_ids.push(toFirId);
+        }
+      }
+    }
+  });
+
+  // Log to audit log
+  const newLog = {
+    id: `AUD-${Math.floor(Math.random() * 9000 + 1000)}`,
+    timestamp: new Date().toISOString(),
+    query: `Transfer Case for ${person.name}`,
+    user_role: user_role || 'Investigator',
+    data_accessed: `PERSON: ${person.id} transferred from FIR ${fromFirId} to FIR ${toFirId}`
+  };
+  auditLogs.unshift(newLog);
+
+  res.json({ success: true, person, auditLog: newLog });
+});
+
+// INVESTIGATOR ACTIONS: Add Person Suspect/Witness File
+app.post('/api/investigator/add-person', (req, res) => {
+  const { name, role, age, gender, address, district, prior_offenses, user_role } = req.body;
+  const newPerson = {
+    id: `PER-ADD-${Math.floor(Math.random() * 9000 + 1000)}`,
+    name: name || 'Unknown Person',
+    role: role || 'accused',
+    age: parseInt(age) || 30,
+    gender: gender || 'Male',
+    address: address || 'KSP Headquarters, Bengaluru',
+    district: district || 'Bengaluru',
+    prior_offenses: prior_offenses ? prior_offenses.split(',').map((s: string) => s.trim()) : [],
+    socio_economic_indicator: 5,
+    warrant_status: 'None' as any
+  };
+  database.persons.push(newPerson);
+
+  const newLog = {
+    id: `AUD-${Math.floor(Math.random() * 9000 + 1000)}`,
+    timestamp: new Date().toISOString(),
+    query: `Register suspect card for ${newPerson.name}`,
+    user_role: user_role || 'Investigator',
+    data_accessed: `CREATED Suspect Node: ${newPerson.id} (${newPerson.role.toUpperCase()})`
+  };
+  auditLogs.unshift(newLog);
+
+  res.json({ success: true, person: newPerson, auditLog: newLog });
+});
+
+// INVESTIGATOR ACTIONS: File New FIR Entry
+app.post('/api/investigator/add-fir', (req, res) => {
+  const { crime_type, station, district, mo_description, narrative_text, ipc_sections, user_role } = req.body;
+  const newFir = {
+    id: `FIR-ADD-${Math.floor(Math.random() * 9000 + 1000)}`,
+    date: new Date().toISOString().split('T')[0],
+    time: new Date().toTimeString().slice(0, 5),
+    crime_type: crime_type || 'Organized Burglary',
+    ipc_sections: ipc_sections ? ipc_sections.split(',').map((s: string) => s.trim()) : ['IPC 379', 'IPC 380'],
+    station: station || 'Bengaluru Town Station',
+    district: district || 'Bengaluru',
+    lat: 12.9716 + (Math.random() - 0.5) * 0.1,
+    lng: 77.5946 + (Math.random() - 0.5) * 0.1,
+    status: 'open' as any,
+    mo_description: mo_description || 'Intruder cut glass during twilight hours.',
+    narrative_text: narrative_text || 'Complainant reported loss of precious jewels and electronics.',
+    assigned_io: 'Awaiting Assignment',
+    priority: 'medium' as any
+  };
+  database.firs.push(newFir);
+
+  const newLog = {
+    id: `AUD-${Math.floor(Math.random() * 9000 + 1000)}`,
+    timestamp: new Date().toISOString(),
+    query: `File crime report FIR ${newFir.id}`,
+    user_role: user_role || 'Investigator',
+    data_accessed: `CREATED FIR Entry: ${newFir.id} under Section ${newFir.ipc_sections.join(', ')}`
+  };
+  auditLogs.unshift(newLog);
+
+  res.json({ success: true, fir: newFir, auditLog: newLog });
+});
+
+// ANALYST ACTIONS: Adjust Tactical Patrol Strategy
+app.post('/api/analyst/patrol-strategy', (req, res) => {
+  const { district, strategy, user_role } = req.body;
+  const socio = database.socioEconomicIndices.find(s => s.district === district);
+  if (socio) {
+    socio.patrol_strategy = strategy;
+    // Simulate positive socio impact (lower unemployment marginally)
+    if (socio.unemployment_rate > 3) {
+      socio.unemployment_rate = parseFloat((socio.unemployment_rate - 0.2).toFixed(1));
+    }
+  }
+
+  const newLog = {
+    id: `AUD-${Math.floor(Math.random() * 9000 + 1000)}`,
+    timestamp: new Date().toISOString(),
+    query: `Apply patrol allocation: ${strategy} for ${district}`,
+    user_role: user_role || 'Analyst',
+    data_accessed: `SET Socio-Economic Safety Mode: ${strategy} in ${district}`
+  };
+  auditLogs.unshift(newLog);
+
+  res.json({ success: true, socio, auditLog: newLog });
+});
+
+// SUPERVISOR ACTIONS: Assign Case Officer (I.O.)
+app.post('/api/supervisor/assign-io', (req, res) => {
+  const { firId, assignedIo, user_role } = req.body;
+  const fir = database.firs.find(f => f.id === firId);
+  if (!fir) return res.status(404).json({ error: 'FIR not found' });
+
+  const oldIo = fir.assigned_io;
+  fir.assigned_io = assignedIo;
+
+  const newLog = {
+    id: `AUD-${Math.floor(Math.random() * 9000 + 1000)}`,
+    timestamp: new Date().toISOString(),
+    query: `Assign investigating officer to ${firId}`,
+    user_role: user_role || 'Supervisor',
+    data_accessed: `FIR: ${firId} delegated to ${assignedIo} (formerly ${oldIo || 'Awaiting'})`
+  };
+  auditLogs.unshift(newLog);
+
+  res.json({ success: true, fir, auditLog: newLog });
+});
+
+// SUPERVISOR ACTIONS: Set Case Priority
+app.post('/api/supervisor/priority', (req, res) => {
+  const { firId, priority, user_role } = req.body;
+  const fir = database.firs.find(f => f.id === firId);
+  if (!fir) return res.status(404).json({ error: 'FIR not found' });
+
+  const oldPriority = fir.priority;
+  fir.priority = priority;
+
+  const newLog = {
+    id: `AUD-${Math.floor(Math.random() * 9000 + 1000)}`,
+    timestamp: new Date().toISOString(),
+    query: `Change incident priority for ${firId}`,
+    user_role: user_role || 'Supervisor',
+    data_accessed: `FIR: ${firId} priority adjusted from ${oldPriority || 'medium'} to ${priority}`
+  };
+  auditLogs.unshift(newLog);
+
+  res.json({ success: true, fir, auditLog: newLog });
+});
+
+// SUPERVISOR ACTIONS: Issue Search / Arrest Warrant
+app.post('/api/supervisor/warrant', (req, res) => {
+  const { personId, warrantStatus, user_role } = req.body;
+  const person = database.persons.find(p => p.id === personId);
+  if (!person) return res.status(404).json({ error: 'Person not found' });
+
+  const oldWarrant = person.warrant_status;
+  person.warrant_status = warrantStatus;
+
+  const newLog = {
+    id: `AUD-${Math.floor(Math.random() * 9000 + 1000)}`,
+    timestamp: new Date().toISOString(),
+    query: `Approve warrant status: ${warrantStatus} for ${person.name}`,
+    user_role: user_role || 'Supervisor',
+    data_accessed: `PERSON: ${personId} warrant updated to ${warrantStatus} (formerly ${oldWarrant || 'None'})`
+  };
+  auditLogs.unshift(newLog);
+
+  res.json({ success: true, person, auditLog: newLog });
+});
+
+// POLICYMAKER ACTIONS: Allocate Safety Budget Directive
+app.post('/api/policymaker/budget', (req, res) => {
+  const { district, budgetAmount, infrastructure, user_role } = req.body;
+  const socio = database.socioEconomicIndices.find(s => s.district === district);
+  if (socio) {
+    socio.budget_allocated = (socio.budget_allocated || 0) + parseFloat(budgetAmount);
+    if (!socio.safety_infrastructure) {
+      socio.safety_infrastructure = [];
+    }
+    if (infrastructure && !socio.safety_infrastructure.includes(infrastructure)) {
+      socio.safety_infrastructure.push(infrastructure);
+    }
+    // Boost socio indicators (decrease unemployment index rate due to civic funding)
+    if (socio.unemployment_rate > 3) {
+      socio.unemployment_rate = parseFloat((socio.unemployment_rate - 0.5).toFixed(1));
+    }
+  }
+
+  const newLog = {
+    id: `AUD-${Math.floor(Math.random() * 9000 + 1000)}`,
+    timestamp: new Date().toISOString(),
+    query: `Approve State Budget Allocation of ${budgetAmount}L in ${district}`,
+    user_role: user_role || 'Policymaker',
+    data_accessed: `BUDGET BILL: allocated ${budgetAmount} Lakhs Rupees to ${district} for ${infrastructure}`
+  };
+  auditLogs.unshift(newLog);
+
+  res.json({ success: true, socio, auditLog: newLog });
 });
 
 // Chat AI agent endpoint

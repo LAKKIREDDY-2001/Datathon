@@ -16,6 +16,8 @@ export interface FIR {
   status: 'open' | 'closed' | 'under investigation';
   mo_description: string;
   narrative_text: string;
+  assigned_io?: string; // e.g. "Insp. S. Kumar"
+  priority?: 'low' | 'medium' | 'high' | 'escalated';
 }
 
 export interface Person {
@@ -28,6 +30,7 @@ export interface Person {
   district: string;
   prior_offenses: string[];
   socio_economic_indicator: number; // 1 to 10
+  warrant_status?: 'None' | 'Pending' | 'Approved' | 'Executed';
 }
 
 export interface Relationship {
@@ -63,6 +66,9 @@ export interface SocioEconomicIndex {
   population_density: number; // per sq km
   urbanization_index: number; // 0 to 1
   avg_income_bracket: 'Low' | 'Medium' | 'High';
+  budget_allocated?: number; // In Lakhs Rupees
+  safety_infrastructure?: string[]; // e.g. ["CCTV Network", "Patrol Force"]
+  patrol_strategy?: string; // e.g. "Saturate Hotspots"
 }
 
 export interface AuditLogEntry {
